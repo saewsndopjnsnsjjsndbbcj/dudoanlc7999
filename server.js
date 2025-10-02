@@ -17,7 +17,7 @@ const PREDICTION_MAP = {
     "XTXTTXTXTTTXT": "Xỉu",
     "XTXTTXTXTTTXX": "Xỉu",
     "XTXTTXTXTTXTT": "Tài",
-    // ... (Toàn bộ Map của bạn) ...
+    // ... Dữ liệu Map của bạn phải được dán vào đây ...
     "XTXXTTTXXTXXX": "Tài",
     "XTXXTTTXXXTTT": "Xỉu",
     "XTXXTTTXXXTTX": "Xỉu",
@@ -42,7 +42,7 @@ let predictionCache = {
 };
 
 // =====================================================================
-// III. HÀM CHỨC NĂNG (ĐÃ LOẠI BỎ RANDOM CHO ĐỘ TIN CẬY)
+// III. HÀM CHỨC NĂNG
 // =====================================================================
 
 /**
@@ -59,23 +59,15 @@ function predictFromHistory(history) {
 }
 
 /**
- * Lấy giá trị độ tin cậy cố định dựa trên loại dự đoán.
- * * @param {boolean} isFoundInMap - True nếu tìm thấy trong Map, False nếu là dự đoán ngẫu nhiên.
- * @returns {string} - Giá trị độ tin cậy CỐ ĐỊNH.
+ * Tạo một giá trị độ tin cậy ngẫu nhiên (RANDOM) và CỐ ĐỊNH cho phiên này.
+ * Phạm vi: 40.0% đến 90.0%
+ * * @returns {string} - Giá trị độ tin cậy dưới dạng chuỗi có ký hiệu %.
  */
-function getFixedConfidence(isFoundInMap = true) {
-    // Giá trị cố định cho độ tin cậy CAO
-    if (isFoundInMap) {
-        // Có thể thay bằng một giá trị cố định khác, ví dụ: "85.0%"
-        const highMin = 80.0;
-        const highMax = 95.0;
-        const confidence = Math.random() * (highMax - highMin) + highMin;
-        return confidence.toFixed(1) + "%";
-    } 
-    // Giá trị cố định cho độ tin cậy THẤP (Ngẫu nhiên hoặc thiếu data)
-    else {
-        return "55.0%"; 
-    }
+function generateRandomConfidence() {
+    const min = 40.0; 
+    const max = 90.0;
+    const confidence = Math.random() * (max - min) + min;
+    return confidence.toFixed(1) + "%";
 }
 
 
@@ -84,7 +76,7 @@ function getFixedConfidence(isFoundInMap = true) {
 // =====================================================================
 app.get('/api/lookup_predict', async (req, res) => {
     let prediction = "Không thể dự đoán";
-    let confidence = "0.0%";
+    let confidence = "0.0%"; // Sẽ được gán giá trị từ generateRandomConfidence()
     let predictionKey = "N/A";
     let currentData = null;
     let phienSau = "N/A";
@@ -99,12 +91,13 @@ app.get('/api/lookup_predict', async (req, res) => {
 
         if (currentData) {
             phienSau = (parseInt(currentData.Phien) + 1).toString();
+            // TÍNH TỔNG 3 XÚC XẮC NHƯ YÊU CẦU
             tongXucXac = currentData.Tong || (parseInt(currentData.Xuc_xac_1) + parseInt(currentData.Xuc_xac_2) + parseInt(currentData.Xuc_xac_3));
         }
 
         // 1. KIỂM TRA CACHE: Nếu phiên tiếp theo đã được dự đoán, trả về ngay kết quả cache
         if (predictionCache.phienSau === phienSau && phienSau !== "N/A") {
-             // Trả về kết quả ĐÃ LƯU TRỮ
+             // Trả về kết quả ĐÃ LƯU TRỮ (cố định)
              return res.json({
                 id: "@SHSUTS1",
                 phien_truoc: currentData ? currentData.Phien : "N/A",
@@ -114,7 +107,7 @@ app.get('/api/lookup_predict', async (req, res) => {
                 lich_su_tra_cuu: predictionCache.predictionKey,
                 phien_sau: predictionCache.phienSau,
                 du_doan: predictionCache.du_doan, 
-                do_tin_cay: predictionCache.do_tin_cay, // ĐÃ CỐ ĐỊNH
+                do_tin_cay: predictionCache.do_tin_cay, // GIÁ TRỊ CỐ ĐỊNH (random ban đầu)
                 giai_thich: "bucuaditkem"
             });
         }
@@ -122,6 +115,9 @@ app.get('/api/lookup_predict', async (req, res) => {
 
         // 2. TÍNH TOÁN DỰ ĐOÁN MỚI (CHỈ XẢY RA KHI PHIÊN MỚI)
         let isPredictionFound = false;
+
+        // --- BƯỚC QUAN TRỌNG: TẠO ĐỘ TIN CẬY NGẪU NHIÊN CỐ ĐỊNH CHO PHIÊN MỚI NÀY ---
+        confidence = generateRandomConfidence(); 
 
         if (historyData.length >= HISTORY_LENGTH) {
             // ĐỦ DỮ LIỆU -> CỐ GẮNG DỰ ĐOÁN BẰNG THUẬT TOÁN
@@ -137,19 +133,15 @@ app.get('/api/lookup_predict', async (req, res) => {
 
             if (prediction === "Không xác định") {
                 // Không tìm thấy cầu -> DỰ ĐOÁN NGẪU NHIÊN LẤP ĐẦY
-                prediction = Math.random() < 0.5 ? "Tài" : "Xỉu"; 
-                confidence = getFixedConfidence(false); 
-                
+                prediction = Math.random() < 0.5 ? "Tài" : "Xỉu";                 
             } else {
-                // Dự đoán thành công từ Map -> ĐỘ TIN CẬY CỐ ĐỊNH CAO
-                confidence = getFixedConfidence(true);
+                // Dự đoán thành công từ Map
                 isPredictionFound = true;
             }
 
         } else {
             // KHÔNG ĐỦ DỮ LIỆU -> DỰ ĐOÁN NGẪU NHIÊN LẤP ĐẦY
             prediction = Math.random() < 0.5 ? "Tài" : "Xỉu";
-            confidence = getFixedConfidence(false);
             predictionKey = "Chỉ có " + historyData.length + " phiên";
         }
         
@@ -158,14 +150,14 @@ app.get('/api/lookup_predict', async (req, res) => {
             predictionCache = {
                 phienSau: phienSau,
                 du_doan: prediction,
-                do_tin_cay: confidence,
+                do_tin_cay: confidence, // GIÁ TRỊ RANDOM ĐÃ ĐƯỢC CỐ ĐỊNH Ở BƯỚC 2
                 predictionKey: isPredictionFound ? predictionKey : "NGẪU NHIÊN/THIẾU DATA"
             };
         }
         
         // 4. TRẢ VỀ PHẢN HỒI VỚI KẾT QUẢ MỚI
         res.json({
-            id: "@cskhtoollxk",
+            id: "@cskhtoollxk_final_standard",
             phien_truoc: currentData ? currentData.Phien : "N/A",
             xuc_xac: currentData ? [currentData.Xuc_xac_1, currentData.Xuc_xac_2, currentData.Xuc_xac_3] : "N/A",
             tong_xuc_xac: tongXucXac,
@@ -174,7 +166,7 @@ app.get('/api/lookup_predict', async (req, res) => {
             phien_sau: phienSau,
             du_doan: prediction, 
             do_tin_cay: confidence, 
-            giai_thich: isPredictionFound ? "hh" : "bucutaodi"
+            giai_thich: `Dự đoán mới. Độ tin cậy ${confidence} đã được tạo ngẫu nhiên và Cố Định cho phiên này.`
         });
 
     } catch (err) {
@@ -184,8 +176,8 @@ app.get('/api/lookup_predict', async (req, res) => {
             id: "@cskhtoollxk_final_standard_error",
             error: "Lỗi kết nối API lịch sử. Đã trả về dự đoán ngẫu nhiên.",
             du_doan: Math.random() < 0.5 ? "Tài" : "Xỉu",
-            do_tin_cay: getFixedConfidence(false),
-            giai_thich: "Lỗi nghiêm trọng khi gọi API lịch sử bên ngoài."
+            do_tin_cay: generateRandomConfidence(), // Vẫn tạo random khi lỗi (nhưng không cache)
+            giai_thich: "Lỗi nghiêm trọng khi gọi API lịch sử bên ngoài. Trả về ngẫu nhiên."
         });
     }
 });
@@ -195,5 +187,3 @@ app.get('/', (req, res) => {
 });
 
 app.listen(PORT, () => console.log(`Server đang chạy trên cổng ${PORT}`));
-    
-
