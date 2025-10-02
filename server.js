@@ -106,7 +106,7 @@ app.get('/api/lookup_predict', async (req, res) => {
         if (predictionCache.phienSau === phienSau && phienSau !== "N/A") {
              // Trả về kết quả ĐÃ LƯU TRỮ
              return res.json({
-                id: "@cskhtoollxk_final_standard_cached",
+                id: "@SHSUTS1",
                 phien_truoc: currentData ? currentData.Phien : "N/A",
                 xuc_xac: currentData ? [currentData.Xuc_xac_1, currentData.Xuc_xac_2, currentData.Xuc_xac_3] : "N/A",
                 tong_xuc_xac: tongXucXac, 
@@ -115,7 +115,7 @@ app.get('/api/lookup_predict', async (req, res) => {
                 phien_sau: predictionCache.phienSau,
                 du_doan: predictionCache.du_doan, 
                 do_tin_cay: predictionCache.do_tin_cay, // ĐÃ CỐ ĐỊNH
-                giai_thich: "Kết quả được lấy từ bộ đệm (CACHE)."
+                giai_thich: "bucuaditkem"
             });
         }
 
@@ -196,3 +196,4 @@ app.get('/', (req, res) => {
 
 app.listen(PORT, () => console.log(`Server đang chạy trên cổng ${PORT}`));
     
+
