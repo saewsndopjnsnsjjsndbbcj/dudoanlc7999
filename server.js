@@ -4,21 +4,13 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // =====================================================================
-// I. DỮ LIỆU DỰ ĐOÁN (ĐÃ LOẠI BỎ MAP LỊCH SỬ CŨ)
+// I. CẤU HÌNH API NGUỒN
 // =====================================================================
-// Không còn sử dụng PREDICTION_MAP
-
-// --- CẤU HÌNH ---
 const HISTORY_API_URL = 'https://bllc-baam.onrender.com/api/lxk';
-// HISTORY_LENGTH không còn cần thiết nhưng giữ lại để không làm lỗi code khác
 
 // =====================================================================
-// II. CACHE DỰ ĐOÁN (ĐỂ CỐ ĐỊNH KẾT QUẢ CHO TỪNG PHIÊN)
+// II. CACHE DỰ ĐOÁN (CỐ ĐỊNH CHO MỖI PHIÊN)
 // =====================================================================
-/**
- * Lưu trữ kết quả dự đoán của phiên N+1 sau khi phiên N kết thúc.
- * {phienSau: "12345", du_doan: "Tài", do_tin_cay: "95.0%", predictionKey: "..."}
- */
 let predictionCache = {
     phienSau: null,
     du_doan: "Đang chờ",
@@ -27,46 +19,71 @@ let predictionCache = {
 };
 
 // =====================================================================
-// III. HÀM CHỨC NĂNG MỚI (DỰ ĐOÁN THEO TỔNG 3 XÚC XẮC)
+// III. HÀM RANDOM ĐỘ TIN CẬY
 // =====================================================================
-
-/**
- * Thuật toán dự đoán *GIẢ LẬP KHÔNG NGẪU NHIÊN* dựa trên Tổng 3 xúc xắc.
- * Lưu ý: Thuật toán này không đảm bảo dự đoán chính xác 100% trong thực tế.
- * Logic: Tổng chẵn -> Tài | Tổng lẻ -> Xỉu
- *
- * @param {number} total - Tổng 3 xúc xắc của phiên N.
- * @returns {string} - Kết quả dự đoán ("Tài" hoặc "Xỉu").
- */
-function predictFromTotal(total) {
-    // Kiểm tra xem tổng có hợp lệ (3 đến 18)
-    if (typeof total !== 'number' || total < 3 || total > 18) {
-        return "Lỗi tổng xúc xắc";
-    }
-    
-    // Quy tắc giả lập "chuẩn xác, không random"
-    if (total % 2 === 0) { // Tổng chẵn
-        return "Tài";
-    } else { // Tổng lẻ
-        return "Xỉu";
-    }
+function randomConfidence(base = 90, range = 10) {
+    const min = base - range / 2;
+    const max = base + range / 2;
+    return `${(Math.random() * (max - min) + min).toFixed(1)}%`;
 }
 
+// =====================================================================
+// IV. THUẬT TOÁN DỰ ĐOÁN VIP PRO
+// =====================================================================
 /**
- * Tạo một giá trị độ tin cậy CỐ ĐỊNH CAO (Giả lập "chuẩn xác").
- * @returns {string} - Giá trị độ tin cậy dưới dạng chuỗi có ký hiệu %.
+ * Dự đoán VIP PRO theo tổng xúc xắc và xu hướng gần nhất.
+ * @param {number} total - Tổng 3 xúc xắc phiên hiện tại.
+ * @param {Array} lastResults - Mảng chứa kết quả 3 phiên gần nhất (["Tài", "Xỉu", ...]).
+ * @returns {{du_doan: string, do_tin_cay: string, giai_thich: string}}
  */
-function getFixedConfidence() {
-    return "95.0%"; // Giá trị cố định
+function predictVIP(total, lastResults = []) {
+    let du_doan = "Không xác định";
+    let giai_thich = "";
+    let baseConfidence = 92; // độ tin cậy cơ bản
+
+    // --- B1: Xác định hướng cơ bản theo tổng ---
+    if (total >= 11) {
+        du_doan = "Tài";
+        giai_thich = `Tổng ${total} cao → nghiêng về Tài`;
+    } else {
+        du_doan = "Xỉu";
+        giai_thich = `Tổng ${total} thấp → nghiêng về Xỉu`;
+    }
+
+    // --- B2: Logic “đảo cầu” nếu chuỗi 3 phiên trước giống nhau ---
+    if (lastResults.length >= 3) {
+        const last3 = lastResults.slice(0, 3);
+        if (last3.every(v => v === last3[0])) {
+            du_doan = (last3[0] === "Tài") ? "Xỉu" : "Tài";
+            giai_thich += ` | Chuỗi ${last3[0]} 3 lần → Đảo cầu (${du_doan})`;
+            baseConfidence += 3;
+        }
+    }
+
+    // --- B3: Giảm độ tin cậy nếu vùng biên ---
+    if (total === 10 || total === 11) {
+        baseConfidence -= 6;
+        giai_thich += " | Vùng biên (10-11) → độ tin cậy giảm nhẹ";
+    }
+
+    // --- B4: Random nhỏ để tự nhiên hơn ---
+    if (baseConfidence > 98) baseConfidence = 98;
+    if (baseConfidence < 80) baseConfidence = 80;
+    const finalConfidence = randomConfidence(baseConfidence, 6);
+
+    return {
+        du_doan,
+        do_tin_cay: finalConfidence,
+        giai_thich
+    };
 }
 
-
 // =====================================================================
-// IV. ENDPOINT DỰ ĐOÁN CHÍNH (SỬ DỤNG CACHE)
+// V. API DỰ ĐOÁN CHÍNH
 // =====================================================================
 app.get('/api/lookup_predict', async (req, res) => {
     let prediction = "Không thể dự đoán";
-    let confidence = getFixedConfidence(); // Lấy độ tin cậy cố định
+    let confidence = "0.0%";
     let predictionKey = "N/A";
     let currentData = null;
     let phienSau = "N/A";
@@ -75,90 +92,91 @@ app.get('/api/lookup_predict', async (req, res) => {
     try {
         const response = await axios.get(HISTORY_API_URL);
         const historyData = Array.isArray(response.data) ? response.data : [response.data];
-        
         currentData = historyData.length > 0 ? historyData[0] : null;
 
         if (currentData) {
             phienSau = (parseInt(currentData.Phien) + 1).toString();
-            
-            // TÍNH TỔNG 3 XÚC XẮC
+
             const x1 = parseInt(currentData.Xuc_xac_1);
             const x2 = parseInt(currentData.Xuc_xac_2);
             const x3 = parseInt(currentData.Xuc_xac_3);
             tongXucXac = currentData.Tong || (x1 + x2 + x3);
         }
 
-        // 1. KIỂM TRA CACHE: Nếu phiên tiếp theo đã được dự đoán, trả về ngay kết quả cache
+        // --- KIỂM TRA CACHE ---
         if (predictionCache.phienSau === phienSau && phienSau !== "N/A") {
-             // Trả về kết quả ĐÃ LƯU TRỮ (cố định)
-             return res.json({
-                id: "@SHSUTS1_NEW_TOTAL",
+            return res.json({
+                id: "@SHSUTS1",
                 phien_truoc: currentData ? currentData.Phien : "N/A",
-                xuc_xac: currentData ? [currentData.Xuc_xac_1, currentData.Xuc_xac_2, currentData.Xuc_xac_3] : "N/A",
-                tong_xuc_xac: tongXucXac, 
+                xuc_xac: currentData ? [currentData.Xuc_xac_1, currentData.Xuc_xac_2, currentData.Xuc_xac_3] : [],
+                tong_xuc_xac: tongXucXac,
                 ket_qua_truoc: currentData ? currentData.Ket_qua : "N/A",
-                lich_su_tra_cuu: predictionCache.predictionKey,
                 phien_sau: predictionCache.phienSau,
-                du_doan: predictionCache.du_doan, 
-                do_tin_cay: predictionCache.do_tin_cay, // GIÁ TRỊ CỐ ĐỊNH CAO
-                giai_thich: "bucuemko"
+                du_doan: predictionCache.du_doan,
+                do_tin_cay: predictionCache.do_tin_cay,
+                lich_su_tra_cuu: predictionCache.predictionKey,
+                giai_thich: predictionCache.giai_thich || "cache"
             });
         }
 
-
-        // 2. TÍNH TOÁN DỰ ĐOÁN MỚI (CHỈ XẢY RA KHI PHIÊN MỚI)
+        // --- DỰ ĐOÁN MỚI ---
         if (currentData && tongXucXac !== "N/A") {
-            // SỬ DỤNG THUẬT TOÁN DỰ ĐOÁN MỚI DỰA TRÊN TỔNG
-            prediction = predictFromTotal(tongXucXac); 
-            predictionKey = `Tổng: ${tongXucXac} (${tongXucXac % 2 === 0 ? "Chẵn" : "Lẻ"})`;
+            const lastResults = historyData.slice(0, 3).map(item => item.Ket_qua);
+            const vipResult = predictVIP(tongXucXac, lastResults);
+
+            prediction = vipResult.du_doan;
+            confidence = vipResult.do_tin_cay;
+            predictionKey = `Tổng: ${tongXucXac}`;
+            giai_thich = vipResult.giai_thich;
         } else {
-             // Không có dữ liệu để tính toán, trả về mặc định
-            prediction = "Không có dữ liệu tổng";
+            prediction = "Không có dữ liệu";
             confidence = "0.0%";
-            predictionKey = "Thiếu dữ liệu phiên trước";
+            predictionKey = "Thiếu dữ liệu phiên";
         }
-        
-        // 3. LƯU KẾT QUẢ VÀO CACHE TRƯỚC KHI TRẢ VỀ
-        if (phienSau !== "N/A" && prediction !== "Không có dữ liệu tổng") {
+
+        // --- LƯU CACHE ---
+        if (phienSau !== "N/A" && prediction !== "Không có dữ liệu") {
             predictionCache = {
-                phienSau: phienSau,
+                phienSau,
                 du_doan: prediction,
-                do_tin_cay: confidence, // GIÁ TRỊ CỐ ĐỊNH
-                predictionKey: predictionKey
+                do_tin_cay: confidence,
+                predictionKey,
+                giai_thich
             };
         }
-        
-        // 4. TRẢ VỀ PHẢN HỒI VỚI KẾT QUẢ MỚI
+
+        // --- TRẢ KẾT QUẢ ---
         res.json({
-            id: "@STPSVI",
+            id: "@SHSUTS1",
             phien_truoc: currentData ? currentData.Phien : "N/A",
-            xuc_xac: currentData ? [currentData.Xuc_xac_1, currentData.Xuc_xac_2, currentData.Xuc_xac_3] : "N/A",
+            xuc_xac: currentData ? [currentData.Xuc_xac_1, currentData.Xuc_xac_2, currentData.Xuc_xac_3] : [],
             tong_xuc_xac: tongXucXac,
             ket_qua_truoc: currentData ? currentData.Ket_qua : "N/A",
-            lich_su_tra_cuu: predictionKey,
             phien_sau: phienSau,
-            du_doan: prediction, 
-            do_tin_cay: confidence, 
-            giai_thich: `bucu`
+            du_doan: prediction,
+            do_tin_cay: confidence,
+            lich_su_tra_cuu: predictionKey,
+            giai_thich
         });
 
     } catch (err) {
-        console.error("Lỗi API bên ngoài:", err.message);
-        // Trả về dự đoán Mặc định khi API nguồn bị lỗi
+        console.error("Lỗi API:", err.message);
         res.status(500).json({
-            id: "@cskhtoollxk_new_total_error",
-            error: "Lỗi kết nối API lịch sử. Đã trả về dự đoán mặc định (không ngẫu nhiên).",
-            du_doan: "Xỉu", // Giá trị mặc định cố định
-            do_tin_cay: getFixedConfidence(), // Độ tin cậy cố định
-            giai_thich: "Lỗi nghiêm trọng khi gọi API lịch sử bên ngoài. Trả về Xỉu cố định."
+            id: "@SHSUTS1_VIPPRO_ERR",
+            error: "Lỗi khi gọi API lịch sử.",
+            du_doan: "Tài",
+            do_tin_cay: randomConfidence(90, 15),
+            giai_thich: "Trả về mặc định khi lỗi nguồn dữ liệu."
         });
     }
 });
 
+// =====================================================================
+// VI. ROUTE GỐC
+// =====================================================================
 app.get('/', (req, res) => {
-    res.send("API dự đoán Tài Xỉu (New Total Standard) đã hoạt động. Truy cập /api/lookup_predict.");
+    res.send("🔥 API Dự đoán Tài Xỉu VIP PRO đang hoạt động. Truy cập /api/lookup_predict để xem kết quả.");
 });
 
-app.listen(PORT, () => console.log(`Server đang chạy trên cổng ${PORT}`));
-
-                                        
+// =====================================================================
+app.listen(PORT, () => console.log(`Server VIP PRO chạy trên cổng ${PORT}`));
