@@ -6,7 +6,7 @@ const PORT = process.env.PORT || 3000;
 // =====================================================================
 // I. CẤU HÌNH API NGUỒN
 // =====================================================================
-const HISTORY_API_URL = 'https://bllc-baam.onrender.com/api/lxk';
+const HISTORY_API_URL = 'https://lichsulc79md.onrender.com/api/lxk';
 
 // =====================================================================
 // II. CACHE DỰ ĐOÁN (CỐ ĐỊNH CHO MỖI PHIÊN)
@@ -180,3 +180,4 @@ app.get('/', (req, res) => {
 
 // =====================================================================
 app.listen(PORT, () => console.log(`Server VIP PRO chạy trên cổng ${PORT}`));
+
