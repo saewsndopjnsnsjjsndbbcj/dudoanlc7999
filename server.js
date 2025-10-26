@@ -1,9 +1,10 @@
-// server_vip_pro_multi_strategy.js
+// server_vip_pro_final_production.js
 // Node.js + Express - BOT DỰ ĐOÁN SIÊU VIP PRO (Tài/Xỉu)
 // - THUẬT TOÁN: ALL-IN-ONE MULTI-STRATEGY (Bệt, Đảo 1-1, Sát Lực, Thuận Trend)
 // - Độ tin cậy HOÀN TOÀN NGẪU NHIÊN 50-90%
-// - Thống kê Chính xác, Cache lưu phiên.
-// Chạy: node server_vip_pro_multi_strategy.js
+// - Thống kê Chính xác: Dự đoán phiên nào lưu phiên đó, so sánh với KQ thực tế.
+// - Pattern 10 cầu hiển thị ngắn gọn (T/X)
+// Chạy: node server_vip_pro_final_production.js
 
 const express = require("express");
 const axios = require("axios");
@@ -11,11 +12,12 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // -------------------- CẤU HÌNH --------------------
+// Thay thế bằng URL API lịch sử của bạn
 const HISTORY_API_URL = process.env.HISTORY_API_URL || "https://jjj-c53c.onrender.com/api/lxk"; 
-const RECENT_COUNT_TREND = 15; // 15 phiên cho xu hướng chung
-const RECENT_COUNT_PATTERN = 10; // 10 phiên cho Pattern ngắn và chuỗi hiển thị
-const CONF_MIN = 50.0; // %
-const CONF_MAX = 90.0; // %
+const RECENT_COUNT_TREND = 15; // 15 phiên cho xu hướng chung (Thuận Trend)
+const RECENT_COUNT_PATTERN = 10; // 10 phiên cho Pattern ngắn (chuỗi T/X hiển thị)
+const CONF_MIN = 50.0; // % Độ tin cậy tối thiểu (Random)
+const CONF_MAX = 90.0; // % Độ tin cậy tối đa (Random)
 
 // -------------------- THỐNG KÊ & CACHE --------------------
 let thongKeNgay = {
@@ -25,13 +27,14 @@ let thongKeNgay = {
     sai: 0
 };
 
+// Lưu chi tiết phiên đã dự đoán gần nhất
 let cacheDuDoan = {
-    phienDuDoan: null,     
-    duDoan: "Đang chờ",    
-    doTinCay: "0.0%",      
-    chuoiPattern: "",      
-    ketQuaThucTe: null,     
-    daCapNhatThongKe: false 
+    phienDuDoan: null,     // Phiên bot đã dự đoán
+    duDoan: "Đang chờ",    // Dự đoán của bot
+    doTinCay: "0.0%",      // Độ tin cậy ngẫu nhiên
+    chuoiPattern: "",      // Chuỗi T/X 10 phiên
+    ketQuaThucTe: null,     // Kết quả thực tế của phiên này (sau khi có)
+    daCapNhatThongKe: false // Trạng thái: Đã cập nhật thống kê ĐÚNG/SAI cho phiên này chưa?
 };
 
 // -------------------- HỖ TRỢ NGÀY GIỜ VN --------------------
@@ -52,6 +55,7 @@ function resetThongKeNgay() {
     console.log(`[${getTimeVN()}] -> Đã reset thống kê hàng ngày và cache.`);
 }
 
+// Lên lịch reset lúc 00:00 VN
 (function scheduleMidnightReset() {
     try {
         const now = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Ho_Chi_Minh" }));
@@ -67,13 +71,22 @@ function resetThongKeNgay() {
     }
 })();
 
-// -------------------- HÀM HỖ TRỢ --------------------
+// Hàm kiểm tra và reset thống kê nếu sang ngày mới
+function resetIfNewDayAndKeep() {
+    const today = getDateVN();
+    if (thongKeNgay.ngay !== today) {
+        resetThongKeNgay();
+    }
+}
+
+// -------------------- HÀM HỖ TRỢ CHUNG --------------------
 
 function randConfidence(min = CONF_MIN, max = CONF_MAX) {
     const r = Math.random() * (max - min) + min;
     return r.toFixed(1) + "%";
 }
 
+// Chuẩn hoá kết quả thành T (Tài) hoặc X (Xỉu) - Dùng trong logic nội bộ/pattern
 function normalizeResultInternal(val) {
     if (!val && val !== "") return "";
     const s = String(val).trim().toLowerCase();
@@ -82,6 +95,7 @@ function normalizeResultInternal(val) {
     return "";
 }
 
+// Chuẩn hoá kết quả thành "Tài" hoặc "Xỉu" - Dùng cho API trả về/thống kê
 function normalizeResultExternal(val) {
     const internal = normalizeResultInternal(val);
     if (internal === "T") return "Tài";
@@ -91,33 +105,34 @@ function normalizeResultExternal(val) {
 
 // -------------------- THUẬT TOÁN SIÊU VIP PRO (MULTI-STRATEGY) --------------------
 /**
- * Thuật toán đa chiến lược, ưu tiên bắt các cầu ngắn phổ biến.
+ * Thuật toán đa chiến lược, ưu tiên bắt các cầu ngắn phổ biến (Thuận Cầu/Trend).
  */
 function superVipProPredict(historyArray) {
     const recent = Array.isArray(historyArray) ? historyArray : [];
-    let duDoanInternal = null; // T hoặc X
+    let duDoanInternal = null; 
+    let logMessage = "Không xác định";
     
-    // Lấy chuỗi T/X cho 10 phiên gần nhất
+    // Lấy chuỗi T/X cho 10 phiên gần nhất (Pattern)
     const patternData = recent.slice(0, RECENT_COUNT_PATTERN);
-    const chuoiPattern = patternData.map(item => normalizeResultInternal(item.ket_qua)).join('');
+    const chuoiPattern = patternData.map(item => normalizeResultInternal(item.Ket_qua || item.ket_qua)).join('');
     
     
     // --- BƯỚC 1: BẮT CẦU BỆT (Ưu tiên cao nhất: 3+ phiên) ---
-    // Kiểm tra bệt TTT hoặc XXX
     const last3 = chuoiPattern.substring(0, 3);
     if (last3.length >= 3 && last3.includes(last3[0].repeat(3))) {
         duDoanInternal = last3[0]; 
-        console.log(`-> Bắt Cầu Bệt ${last3[0].repeat(3)}`);
+        logMessage = `Bắt Cầu Bệt ${last3[0].repeat(3)}`;
     }
 
     // --- BƯỚC 2: BẮT CẦU ĐẢO 1-1 (4 phiên -> dự đoán tiếp 1-1) ---
     if (duDoanInternal === null) {
         const last4 = chuoiPattern.substring(0, 4);
         if (last4.length === 4) {
+            // Kiểm tra TXTX hoặc XTXT
             if (last4 === "TXTX" || last4 === "XTXT") {
-                // Dự đoán ngược lại phiên cuối (T-X-T-X -> Dự đoán T)
+                // Dự đoán ngược lại phiên cuối (TXTX -> Dự đoán T / XTXT -> Dự đoán X)
                 duDoanInternal = last4[3] === "T" ? "X" : "T"; 
-                console.log(`-> Bắt Cầu Đảo 1-1 (${last4[3]} -> ${duDoanInternal})`);
+                logMessage = `Bắt Cầu Đảo 1-1 (${last4[3]} -> ${duDoanInternal})`;
             }
         }
     }
@@ -126,15 +141,15 @@ function superVipProPredict(historyArray) {
     if (duDoanInternal === null) {
         const last6 = chuoiPattern.substring(0, 6);
         if (last6.length === 6) {
-            // Chuỗi 2-1-2 (T-T-X-T-T-X -> Dự đoán T)
-            if (last6.match(/(\w\w)(\w)(\w\w)(\w)/) && last6[0] === last6[1] && last6[3] === last6[4] && last6[1] !== last6[2] && last6[2] === last6[5] && last6[0] === last6[3]) {
-                 duDoanInternal = last6[0]; // Dự đoán tiếp tục cầu T
-                 console.log(`-> Bắt Cầu Sát Lực 2-1-2 (${last6})`);
+            // Cầu 2-1-2 (ví dụ: T T X T T X) -> Dự đoán T
+            if (last6[0] === last6[1] && last6[3] === last6[4] && last6[1] !== last6[2] && last6[2] === last6[5] && last6[0] === last6[3]) {
+                 duDoanInternal = last6[0]; 
+                 logMessage = `Bắt Cầu Sát Lực 2-1-2 (${last6})`;
             }
-            // Chuỗi 3-2 (T-T-T-X-X -> Dự đoán T) -> 3-2-3 (T-T-T-X-X-T -> Dự đoán T)
-            else if (last6.match(/(\w\w\w)(\w\w)(\w)/) && last6[0] === last6[1] && last6[0] === last6[2] && last6[3] === last6[4] && last6[2] !== last6[3] && last6[4] !== last6[5] && last6[5] === last6[2]) {
-                duDoanInternal = last6[0]; // Dự đoán quay lại cầu T
-                console.log(`-> Bắt Cầu Sát Lực 3-2-3 (${last6})`);
+            // Cầu 3-2-3 (ví dụ: T T T X X T) -> Dự đoán X
+            else if (last6[0] === last6[1] && last6[0] === last6[2] && last6[3] === last6[4] && last6[2] !== last6[3] && last6[4] !== last6[5] && last6[5] === last6[2]) {
+                duDoanInternal = last6[0]; 
+                logMessage = `Bắt Cầu Sát Lực 3-2-3 (${last6})`;
             }
         }
     }
@@ -144,7 +159,7 @@ function superVipProPredict(historyArray) {
         const trendData = recent.slice(0, RECENT_COUNT_TREND);
         let countT = 0, countX = 0;
         trendData.forEach(item => {
-            const kq = normalizeResultInternal(item.ket_qua);
+            const kq = normalizeResultInternal(item.Ket_qua || item.ket_qua);
             if (kq === "T") countT++;
             else if (kq === "X") countX++;
         });
@@ -152,40 +167,42 @@ function superVipProPredict(historyArray) {
         if (countT + countX > 0) {
             if (countT > countX) { 
                 duDoanInternal = "T"; 
-                console.log("-> Bắt Thuận Trend Lớn Tài (15p)");
+                logMessage = "Bắt Thuận Trend Lớn Tài (15p)";
             } else if (countX > countT) { 
                 duDoanInternal = "X"; 
-                console.log("-> Bắt Thuận Trend Lớn Xỉu (15p)");
+                logMessage = "Bắt Thuận Trend Lớn Xỉu (15p)";
             } else { 
                 duDoanInternal = Math.random() < 0.5 ? "T" : "X"; 
-                console.log("-> Cân bằng, Random");
+                logMessage = "Cân bằng, Random";
             }
         } else {
             duDoanInternal = Math.random() < 0.5 ? "T" : "X";
-            console.log("-> Không đủ data, Random");
+            logMessage = "Không đủ data, Random";
         }
     }
     
     const duDoanExternal = duDoanInternal === "T" ? "Tài" : (duDoanInternal === "X" ? "Xỉu" : "Đang chờ");
 
-    return { duDoan: duDoanExternal, chuoiPattern };
+    return { duDoan: duDoanExternal, chuoiPattern, logMessage };
 }
 
 
 // -------------------- CẬP NHẬT ĐÚNG/SAI KHI CÓ KQ THỰC TẾ --------------------
 function checkAndUpdateAccuracy(latest) {
     try {
-        if (!latest || latest.phien === undefined) return;
-        if (!cacheDuDoan || !cacheDuDoan.phienDuDoan) return;
+        // Sử dụng Phien (chữ hoa) vì API của bạn có thể trả về Phien thay vì phien
+        if (!latest || latest.Phien === undefined || !cacheDuDoan.phienDuDoan) return; 
 
         const predictedPhien = String(cacheDuDoan.phienDuDoan);
-        const latestPhien = String(latest.phien);
+        const latestPhien = String(latest.Phien);
 
+        // Kiểm tra xem phiên gần nhất có phải là phiên ta đã dự đoán không
         if (predictedPhien === latestPhien) {
             
-            const actual = normalizeResultExternal(latest.ket_qua); 
+            const actual = normalizeResultExternal(latest.Ket_qua || latest.ket_qua); 
             const predicted = cacheDuDoan.duDoan; 
             
+            // Chỉ cập nhật nếu kết quả thực tế là Tài/Xỉu VÀ chưa cập nhật thống kê
             if((actual === "Tài" || actual === "Xỉu") && !cacheDuDoan.daCapNhatThongKe) {
                 
                 // CẬP NHẬT THỐNG KÊ ĐÚNG/SAI
@@ -200,7 +217,7 @@ function checkAndUpdateAccuracy(latest) {
                 cacheDuDoan.daCapNhatThongKe = true; 
             } 
             
-            // LƯU KẾT QUẢ THỰC TẾ VÀO CACHE
+            // LƯU KẾT QUẢ THỰC TẾ VÀO CACHE CỦA PHIÊN ĐÓ
             if (actual === "Tài" || actual === "Xỉu") {
                 cacheDuDoan.ketQuaThucTe = actual; 
             }
@@ -215,10 +232,11 @@ function checkAndUpdateAccuracy(latest) {
 app.get("/api/lookup_predict", async (req, res) => {
     try {
         const response = await axios.get(HISTORY_API_URL, { timeout: 7000 });
-        const data = Array.isArray(response.data) ? response.data : [response.data];
+        // Sửa lỗi: Đảm bảo dữ liệu là mảng, xử lý trường hợp API trả về object đơn lẻ
+        const rawData = Array.isArray(response.data) ? response.data : (response.data && response.data.Phien !== undefined ? [response.data] : []);
         
-        if (!data || data.length === 0) {
-            return res.json({
+        if (rawData.length === 0) {
+            return res.status(200).json({
                 id: "VIP_PRO_001",
                 time_vn: getTimeVN(),
                 error: "Không có dữ liệu lịch sử",
@@ -229,18 +247,19 @@ app.get("/api/lookup_predict", async (req, res) => {
         resetIfNewDayAndKeep();
 
         // 1. Cập nhật thống kê và lưu kết quả thực tế của phiên trước đó (nếu có)
-        checkAndUpdateAccuracy(data[0]);
+        checkAndUpdateAccuracy(rawData[0]);
 
-        // Xác định phiên dự đoán tiếp theo
-        const phienGanNhat = (data[0] && data[0].phien !== undefined) ? String(data[0].phien) : "N/A";
-        const phienDuDoanTiepTheo = (phienGanNhat !== "N/A") ? String(parseInt(phienGanNhat) + 1) : "N/A";
-        const ketQuaGanNhat = normalizeResultExternal(data[0].ket_qua); 
+        // Xác định phiên gần nhất và phiên dự đoán tiếp theo
+        const phienGanNhat = (rawData[0] && rawData[0].Phien !== undefined) ? String(rawData[0].Phien) : "N/A";
+        // Đảm bảo Phien là số trước khi tăng 1
+        const phienDuDoanTiepTheo = (phienGanNhat !== "N/A" && phienGanNhat.match(/^\d+$/)) ? String(parseInt(phienGanNhat) + 1) : "N/A";
+        const ketQuaGanNhat = normalizeResultExternal(rawData[0].Ket_qua || rawData[0].ket_qua); 
 
-        // 2. Trả về cache nếu phiên hiện tại vẫn đang chờ kết quả (giữ nguyên dự đoán cũ)
+        // 2. Trả về cache nếu phiên hiện tại vẫn đang chờ kết quả 
         if (cacheDuDoan.phienDuDoan === phienDuDoanTiepTheo && phienDuDoanTiepTheo !== "N/A") {
             resetIfNewDayAndKeep();
             return res.json({
-                id: "@STPSWQ",
+                id: "VIP_PRO_001_CACHE",
                 time_vn: getTimeVN(),
                 phien_gan_nhat: phienGanNhat,
                 ket_qua_gan_nhat: ketQuaGanNhat,
@@ -254,8 +273,8 @@ app.get("/api/lookup_predict", async (req, res) => {
         }
         
         // --- TÍNH DỰ ĐOÁN MỚI CHO PHIÊN TIẾP THEO ---
-        const { duDoan, chuoiPattern } = superVipProPredict(data); 
-        const doTinCay = randConfidence(); // Độ tin cậy Random
+        const { duDoan, chuoiPattern, logMessage } = superVipProPredict(rawData); 
+        const doTinCay = randConfidence(); 
 
         // 3. Cập nhật cache và tăng tổng dự đoán (chỉ khi có dự đoán mới)
         cacheDuDoan = {
@@ -270,11 +289,11 @@ app.get("/api/lookup_predict", async (req, res) => {
         resetIfNewDayAndKeep();
         thongKeNgay.tong = (thongKeNgay.tong || 0) + 1; 
         
-        console.log(`[${getTimeVN()}] -> DỰ ĐOÁN MỚI: Phiên ${phienDuDoanTiepTheo} là ${duDoan} (${doTinCay})`);
+        console.log(`[${getTimeVN()}] -> DỰ ĐOÁN MỚI: Phiên ${phienDuDoanTiepTheo} là ${duDoan} (${logMessage})`);
 
         // 4. Trả về kết quả mới
         return res.json({
-            id: "@STPSWQ",
+            id: "VIP_PRO_001",
             time_vn: getTimeVN(),
             phien_gan_nhat: phienGanNhat,
             ket_qua_gan_nhat: ketQuaGanNhat, 
@@ -287,11 +306,11 @@ app.get("/api/lookup_predict", async (req, res) => {
         });
 
     } catch (err) {
-        console.error("Lỗi khi gọi API lịch sử:", err && err.message ? err.message : err);
+        console.error("Lỗi chung khi xử lý dự đoán:", err && err.message ? err.message : err);
         return res.status(500).json({
             id: "VIP_PRO_001_ERR",
             time_vn: getTimeVN(),
-            error: "Không lấy được dữ liệu lịch sử",
+            error: "Lỗi trong quá trình xử lý dữ liệu hoặc thuật toán.",
             thong_ke: thongKeNgay
         });
     }
@@ -307,14 +326,6 @@ app.get("/api/thongke", (req, res) => {
         cache_du_doan_gan_nhat: cacheDuDoan 
     });
 });
-
-// -------------------- HÀM RESET NGÀY TRƯỚC KHI TRẢ (KIỂM TRA MẪU) --------------------
-function resetIfNewDayAndKeep() {
-    const today = getDateVN();
-    if (thongKeNgay.ngay !== today) {
-        resetThongKeNgay();
-    }
-}
 
 // -------------------- TRANG CHỦ --------------------
 app.get("/", (req, res) => {
